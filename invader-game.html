@@ -1,0 +1,1564 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <title>インベーダー風ゲーム</title>
+  <style>
+    body {
+      margin: 0;
+      background: black;
+      overflow: hidden;
+    }
+    canvas {
+      display: block;
+      margin: 0 auto;
+      background: #111;
+    }
+  </style>
+</head>
+<body>
+<canvas id="gameCanvas" width="480" height="640"></canvas>
+
+<script>
+const canvas = document.getElementById('gameCanvas');
+const ctx = canvas.getContext('2d');
+
+let score, kills, level, stageEnemiesDefeated;
+let isBoss, gameOver;
+let player, bullets, enemies, bossBullets, explosions;
+let keys = {};
+let enemyTimer = 0;
+let bulletCooldown = 0;
+
+// サウンド
+const shotSound = new Audio('shot.mp3');
+const hitSound = new Audio('explosion.mp3');
+const bgm = new Audio('bgm.mp3');
+shotSound.volume = 0.4;
+hitSound.volume = 0.5;
+bgm.volume = 0.4;
+bgm.loop = true;
+let bgmStarted = false;
+
+document.addEventListener('keydown', e => {
+  keys[e.code] = true;
+  if (!bgmStarted) {
+    bgm.play().catch(() => {});
+    bgmStarted = true;
+  }
+  if (gameOver && e.code === 'Enter') init();
+});
+document.addEventListener('keyup', e => keys[e.code] = false);
+
+function init() {
+  score = 0;
+  kills = 0;
+  level = 1;
+  stageEnemiesDefeated = 0;
+  isBoss = false;
+  gameOver = false;
+  player = { x: 220, y: 580, width: 50, height: 20, speed: 5 };
+  bullets = [];
+  enemies = [];
+  bossBullets = [];
+  explosions = [];
+  enemyTimer = 0;
+  bulletCooldown = 0;
+  bgm.currentTime = 0;
+  requestAnimationFrame(update);
+}
+
+function spawnEnemy() {
+  const types = [
+    { color: '#66ff66', hp: 1, score: 100 },
+    { color: '#ffcc00', hp: 2, score: 200 },
+    { color: '#ff3366', hp: 3, score: 300 }
+  ];
+  const type = types[Math.floor(Math.random() * types.length)];
+  enemies.push({
+    x: Math.random() * 440,
+    y: 0,
+    width: 40,
+    height: 30,
+    speed: 1 + Math.random() * 0.5 + (level * 0.2),
+    color: type.color,
+    hp: type.hp,
+    maxHp: type.hp,
+    score: type.score,
+    boss: false
+  });
+}
+
+function spawnBoss() {
+  isBoss = true;
+  enemies.push({
+    x: 120,
+    y: 0,
+    width: 240,
+    height: 60,
+    speed: 0.8 + level * 0.2,
+    color: 'purple',
+    hp: 20 + level * 10,
+    maxHp: 20 + level * 10,
+    score: 1000,
+    boss: true,
+    fireCooldown: 100
+  });
+}
+
+function drawEnemy(e) {
+  ctx.save();
+  ctx.translate(e.x, e.y);
+  ctx.fillStyle = e.color;
+  ctx.shadowColor = e.color;
+  ctx.shadowBlur = 10;
+  ctx.beginPath();
+  ctx.ellipse(e.width / 2, e.height / 2, e.width / 2, e.height / 2.5, 0, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.shadowBlur = 0;
+  ctx.fillStyle = 'white';
+  if (e.boss) {
+    ctx.beginPath();
+    ctx.arc(e.width / 2 - 30, e.height / 2 - 5, 5, 0, Math.PI * 2);
+    ctx.arc(e.width / 2, e.height / 2 - 10, 5, 0, Math.PI * 2);
+    ctx.arc(e.width / 2 + 30, e.height / 2 - 5, 5, 0, Math.PI * 2);
+    ctx.fill();
+  } else {
+    ctx.beginPath();
+    ctx.arc(13, 12, 2, 0, Math.PI * 2);
+    ctx.arc(27, 12, 2, 0, Math.PI * 2);
+    ctx.fill();
+  }
+  ctx.fillStyle = 'red';
+  ctx.fillRect(5, e.height - 6, e.width - 10, 4);
+  ctx.fillStyle = 'lime';
+  ctx.fillRect(5, e.height - 6, (e.width - 10) * (e.hp / e.maxHp), 4);
+  ctx.restore();
+}
+
+function drawFighter() {
+  ctx.save();
+  ctx.translate(player.x, player.y);
+  ctx.fillStyle = '#00ccff';
+  ctx.beginPath();
+  ctx.moveTo(25, 0);
+  ctx.lineTo(50, 20);
+  ctx.lineTo(0, 20);
+  ctx.closePath();
+  ctx.fill();
+  ctx.fillStyle = 'white';
+  ctx.beginPath();
+  ctx.arc(25, 12, 4, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.restore();
+}
+
+function drawMissile(b) {
+  ctx.fillStyle = b.strong ? 'cyan' : 'orange';
+  ctx.shadowColor = b.strong ? 'aqua' : 'yellow';
+  ctx.shadowBlur = 10;
+  ctx.fillRect(b.x, b.y, 6, b.strong ? 20 : 12);
+  ctx.shadowBlur = 0;
+}
+
+function drawExplosions() {
+  for (let i = explosions.length - 1; i >= 0; i--) {
+    const ex = explosions[i];
+    ctx.globalAlpha = ex.alpha;
+    ctx.beginPath();
+    ctx.arc(ex.x, ex.y, ex.radius, 0, Math.PI * 2);
+    ctx.fillStyle = ex.color;
+    ctx.shadowColor = ex.color;
+    ctx.shadowBlur = 10;
+    ctx.fill();
+    ctx.shadowBlur = 0;
+    ctx.globalAlpha = 1;
+    ex.radius += 1;
+    ex.alpha -= 0.04;
+    if (ex.alpha <= 0) explosions.splice(i, 1);
+  }
+}
+
+function update() {
+  if (gameOver) {
+    ctx.fillStyle = 'white';
+    ctx.font = '30px sans-serif';
+    ctx.fillText('GAME OVER - Enterで再スタート', 40, canvas.height / 2);
+    return;
+  }
+
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+  ctx.fillStyle = 'white';
+  ctx.font = '20px sans-serif';
+  ctx.fillText(`Score: ${score}  Level: ${level}`, 10, 30);
+
+  if (!isBoss && ++enemyTimer > 50) {
+    spawnEnemy();
+    enemyTimer = 0;
+  }
+
+  if (!isBoss && stageEnemiesDefeated >= 20) {
+    spawnBoss();
+  }
+
+  // 自機移動
+  if (keys['ArrowLeft']) player.x -= player.speed;
+  if (keys['ArrowRight']) player.x += player.speed;
+  if (keys['ArrowUp']) player.y -= player.speed;
+  if (keys['ArrowDown']) player.y += player.speed;
+  player.y += 0.2;
+  if (player.x < 0) player.x = 0;
+  if (player.x + player.width > canvas.width) player.x = canvas.width - player.width;
+  if (player.y < 0) player.y = 0;
+  if (player.y + player.height > canvas.height) player.y = canvas.height - player.height;
+
+  // ミサイル発射
+  if (keys['Space'] && bulletCooldown <= 0) {
+    const strong = kills >= 10;
+    bullets.push({ x: player.x + 22, y: player.y, speed: 8, strong });
+    bulletCooldown = strong ? 20 : 10;
+    shotSound.currentTime = 0;
+    shotSound.play();
+    if (strong) {
+      kills -= 10;
+      level++;
+    }
+  }
+  if (bulletCooldown > 0) bulletCooldown--;
+
+  drawFighter();
+
+  // ミサイル描画・移動
+  bullets.forEach((b, i) => {
+    b.y -= b.speed;
+    drawMissile(b);
+    if (b.y < 0) bullets.splice(i, 1);
+  });
+
+  // 敵描画・移動・当たり判定
+  enemies.forEach((e, i) => {
+    e.y += e.speed;
+    drawEnemy(e);
+
+    bullets.forEach((b, j) => {
+      if (b.x < e.x + e.width && b.x + 6 > e.x && b.y < e.y + e.height && b.y + (b.strong ? 20 : 12) > e.y) {
+        e.hp -= b.strong ? 3 : 1;
+        if (!b.strong) bullets.splice(j, 1);
+        if (e.hp <= 0) {
+          score += e.score;
+          kills++;
+          stageEnemiesDefeated++;
+          explosions.push({ x: e.x + e.width / 2, y: e.y + e.height / 2, radius: 0, color: e.color, alpha: 1 });
+          enemies.splice(i, 1);
+          hitSound.currentTime = 0;
+          hitSound.play();
+          if (e.boss) {
+            isBoss = false;
+            stageEnemiesDefeated = 0;
+            level++;
+          }
+        }
+      }
+    });
+
+    if (e.y > canvas.height) gameOver = true;
+  });
+
+  drawExplosions();
+
+  requestAnimationFrame(update);
+}
+
+init();
+</script>
+</body>
+</html>
+DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <title>インベーダー風ゲーム</title>
+  <style>
+    body {
+      margin: 0;
+      background: black;
+      overflow: hidden;
+    }
+    canvas {
+      display: block;
+      margin: 0 auto;
+      background: #111;
+    }
+  </style>
+</head>
+<body>
+<canvas id="gameCanvas" width="480" height="640"></canvas>
+
+<script>
+const canvas = document.getElementById('gameCanvas');
+const ctx = canvas.getContext('2d');
+
+let score, kills, level, stageEnemiesDefeated;
+let isBoss, gameOver;
+let player, bullets, enemies, bossBullets, explosions;
+let keys = {};
+let enemyTimer = 0;
+let bulletCooldown = 0;
+
+// サウンド
+const shotSound = new Audio('shot.mp3');
+const hitSound = new Audio('explosion.mp3');
+const bgm = new Audio('bgm.mp3');
+shotSound.volume = 0.4;
+hitSound.volume = 0.5;
+bgm.volume = 0.4;
+bgm.loop = true;
+let bgmStarted = false;
+
+document.addEventListener('keydown', e => {
+  keys[e.code] = true;
+  if (!bgmStarted) {
+    bgm.play().catch(() => {});
+    bgmStarted = true;
+  }
+  if (gameOver && e.code === 'Enter') init();
+});
+document.addEventListener('keyup', e => keys[e.code] = false);
+
+function init() {
+  score = 0;
+  kills = 0;
+  level = 1;
+  stageEnemiesDefeated = 0;
+  isBoss = false;
+  gameOver = false;
+  player = { x: 220, y: 580, width: 50, height: 20, speed: 5 };
+  bullets = [];
+  enemies = [];
+  bossBullets = [];
+  explosions = [];
+  enemyTimer = 0;
+  bulletCooldown = 0;
+  bgm.currentTime = 0;
+  requestAnimationFrame(update);
+}
+
+function update() {
+  if (gameOver) {
+    ctx.fillStyle = 'white';
+    ctx.font = '30px sans-serif';
+    ctx.fillText('GAME OVER - Enterで再スタート', 40, canvas.height / 2);
+    return;
+  }
+
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+  ctx.fillStyle = 'white';
+  ctx.font = '20px sans-serif';
+  ctx.fillText(`Score: ${score}  Level: ${level}`, 10, 30);
+
+  // プレイヤー描画
+  ctx.fillStyle = '#00ccff';
+  ctx.fillRect(player.x, player.y, player.width, player.height);
+
+  requestAnimationFrame(update);
+}
+
+init();
+</script>
+</body>
+</html>
+DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <title>インベーダー風ゲーム</title>
+  <style>
+    body {
+      margin: 0;
+      background: black;
+      overflow: hidden;
+    }
+    canvas {
+      display: block;
+      margin: 0 auto;
+      background: #111;
+    }
+  </style>
+</head>
+<body>
+<canvas id="gameCanvas" width="480" height="640"></canvas>
+
+<script>
+const canvas = document.getElementById('gameCanvas');
+const ctx = canvas.getContext('2d');
+
+let score, kills, level, stageEnemiesDefeated;
+let isBoss, gameOver;
+let player, bullets, enemies, bossBullets, explosions;
+let keys = {};
+let enemyTimer = 0;
+let bulletCooldown = 0;
+
+// サウンド
+const shotSound = new Audio('shot.mp3');
+const hitSound = new Audio('explosion.mp3');
+const bgm = new Audio('bgm.mp3');
+shotSound.volume = 0.4;
+hitSound.volume = 0.5;
+bgm.volume = 0.4;
+bgm.loop = true;
+let bgmStarted = false;
+
+document.addEventListener('keydown', e => {
+  keys[e.code] = true;
+  if (!bgmStarted) {
+    bgm.play().catch(() => {});
+    bgmStarted = true;
+  }
+  if (gameOver && e.code === 'Enter') init();
+});
+document.addEventListener('keyup', e => keys[e.code] = false);
+
+function init() {
+  score = 0;
+  kills = 0;
+  level = 1;
+  stageEnemiesDefeated = 0;
+  isBoss = false;
+  gameOver = false;
+  player = { x: 220, y: 580, width: 50, height: 20, speed: 5 };
+  bullets = [];
+  enemies = [];
+  bossBullets = [];
+  explosions = [];
+  enemyTimer = 0;
+  bulletCooldown = 0;
+  bgm.currentTime = 0;
+  requestAnimationFrame(update);
+}
+
+// 以下、残りのゲームロジックは元のコードと同じ（省略）
+// この部分に既存のupdate関数などのコードが続きます
+</script>
+</body>
+</html>
+DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <title>インベーダー風ゲーム</title>
+  <style>
+    body {
+      margin: 0;
+      background: black;
+      overflow: hidden;
+    }
+    canvas {
+      display: block;
+      margin: 0 auto;
+      background: #111;
+    }
+  </style>
+</head>
+<body>
+<canvas id="gameCanvas" width="480" height="640"></canvas>
+
+<script>
+const canvas = document.getElementById('gameCanvas');
+const ctx = canvas.getContext('2d');
+
+let score, kills, level, stageEnemiesDefeated;
+let isBoss, gameOver;
+let player, bullets, enemies, bossBullets, explosions;
+let keys = {};
+let enemyTimer = 0;
+let bulletCooldown = 0;
+
+// サウンド
+const shotSound = new Audio('shot.mp3');
+const hitSound = new Audio('explosion.mp3');
+const bgm = new Audio('bgm.mp3');
+shotSound.volume = 0.4;
+hitSound.volume = 0.5;
+bgm.volume = 0.4;
+bgm.loop = true;
+
+document.addEventListener('keydown', e => {
+  keys[e.code] = true;
+  if (gameOver && e.code === 'Enter') init();
+});
+document.addEventListener('keyup', e => keys[e.code] = false);
+
+function init() {
+  score = 0;
+  kills = 0;
+  level = 1;
+  stageEnemiesDefeated = 0;
+  isBoss = false;
+  gameOver = false;
+  player = { x: 220, y: 580, width: 50, height: 20, speed: 5 };
+  bullets = [];
+  enemies = [];
+  bossBullets = [];
+  explosions = [];
+  enemyTimer = 0;
+  bulletCooldown = 0;
+  bgm.currentTime = 0;
+  bgm.play();
+  requestAnimationFrame(update);
+}
+
+function spawnEnemy() {
+  if (isBoss) return;
+  const types = [
+    { color: '#66ff66', hp: 1, score: 100 },
+    { color: '#ffcc00', hp: 2, score: 200 },
+    { color: '#ff3366', hp: 3, score: 300 }
+  ];
+  const type = types[Math.floor(Math.random() * types.length)];
+  enemies.push({
+    x: Math.random() * 400,
+    y: 0,
+    width: 40,
+    height: 30,
+    speed: 1 + Math.random() * 0.5 + (level * 0.2),
+    color: type.color,
+    hp: type.hp,
+    maxHp: type.hp,
+    score: type.score,
+    boss: false
+  });
+}
+
+function spawnBoss() {
+  isBoss = true;
+  enemies.push({
+    x: 120,
+    y: 0,
+    width: 240,
+    height: 60,
+    speed: 0.8 + level * 0.2,
+    color: 'purple',
+    hp: 20 + level * 10,
+    maxHp: 20 + level * 10,
+    score: 1000,
+    boss: true,
+    fireCooldown: 100
+  });
+}
+
+function drawEnemy(e) {
+  ctx.save();
+  ctx.translate(e.x, e.y);
+  ctx.fillStyle = e.color;
+  ctx.shadowColor = e.color;
+  ctx.shadowBlur = 10;
+  ctx.beginPath();
+  ctx.ellipse(e.width / 2, e.height / 2, e.width / 2, e.height / 2.5, 0, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.shadowBlur = 0;
+  ctx.fillStyle = 'white';
+  if (e.boss) {
+    ctx.beginPath();
+    ctx.arc(e.width / 2 - 30, e.height / 2 - 5, 5, 0, Math.PI * 2);
+    ctx.arc(e.width / 2, e.height / 2 - 10, 5, 0, Math.PI * 2);
+    ctx.arc(e.width / 2 + 30, e.height / 2 - 5, 5, 0, Math.PI * 2);
+    ctx.fill();
+  } else {
+    ctx.beginPath();
+    ctx.arc(13, 12, 2, 0, Math.PI * 2);
+    ctx.arc(27, 12, 2, 0, Math.PI * 2);
+    ctx.fill();
+  }
+  ctx.fillStyle = 'red';
+  ctx.fillRect(5, e.height - 6, e.width - 10, 4);
+  ctx.fillStyle = 'lime';
+  ctx.fillRect(5, e.height - 6, (e.width - 10) * (e.hp / e.maxHp), 4);
+  ctx.restore();
+}
+
+function drawMissile(b) {
+  ctx.fillStyle = b.strong ? 'cyan' : 'orange';
+  ctx.shadowColor = b.strong ? 'aqua' : 'yellow';
+  ctx.shadowBlur = 10;
+  ctx.fillRect(b.x, b.y, 6, b.strong ? 20 : 12);
+  ctx.shadowBlur = 0;
+}
+
+function drawFighter() {
+  ctx.save();
+  ctx.translate(player.x, player.y);
+  ctx.fillStyle = '#00ccff';
+  ctx.beginPath();
+  ctx.moveTo(25, 0);
+  ctx.lineTo(50, 20);
+  ctx.lineTo(0, 20);
+  ctx.closePath();
+  ctx.fill();
+  ctx.fillStyle = 'white';
+  ctx.beginPath();
+  ctx.arc(25, 12, 4, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.restore();
+}
+
+function drawScore() {
+  ctx.fillStyle = 'white';
+  ctx.font = '18px sans-serif';
+  ctx.fillText(`SCORE: ${score}  LEVEL: ${level}`, 10, 30);
+}
+
+function createExplosion(x, y, color) {
+  explosions.push({ x, y, radius: 0, max: 15, color, alpha: 1 });
+}
+
+function drawExplosions() {
+  for (let i = explosions.length - 1; i >= 0; i--) {
+    const ex = explosions[i];
+    ctx.globalAlpha = ex.alpha;
+    ctx.beginPath();
+    ctx.arc(ex.x, ex.y, ex.radius, 0, Math.PI * 2);
+    ctx.fillStyle = ex.color;
+    ctx.shadowColor = ex.color;
+    ctx.shadowBlur = 10;
+    ctx.fill();
+    ctx.shadowBlur = 0;
+    ctx.globalAlpha = 1;
+    ex.radius += 1;
+    ex.alpha -= 0.04;
+    if (ex.alpha <= 0) explosions.splice(i, 1);
+  }
+}
+
+function update() {
+  if (gameOver) {
+    ctx.fillStyle = 'white';
+    ctx.font = '30px sans-serif';
+    ctx.fillText('GAME OVER - Enterで再スタート', 40, canvas.height / 2);
+    return;
+  }
+
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+  // 自機の移動と下降
+  if (keys['ArrowLeft']) player.x -= player.speed;
+  if (keys['ArrowRight']) player.x += player.speed;
+  if (keys['ArrowUp']) player.y -= player.speed;
+  if (keys['ArrowDown']) player.y += player.speed;
+  player.y += 0.2;
+  if (player.x < 0) player.x = 0;
+  if (player.x + player.width > canvas.width) player.x = canvas.width - player.width;
+  if (player.y < 0) player.y = 0;
+  if (player.y + player.height > canvas.height) player.y = canvas.height - player.height;
+
+  if (keys['Space'] && bulletCooldown <= 0) {
+    const strong = kills >= 10;
+    bullets.push({ x: player.x + 22, y: player.y, speed: 8, strong: strong });
+    bulletCooldown = strong ? 20 : 10;
+    shotSound.currentTime = 0;
+    shotSound.play();
+    if (strong) {
+      kills -= 10;
+      level += 1;
+    }
+  }
+  if (bulletCooldown > 0) bulletCooldown--;
+
+  drawFighter();
+  drawScore();
+
+  bullets.forEach((b, i) => {
+    b.y -= b.speed;
+    drawMissile(b);
+    if (b.y < 0) bullets.splice(i, 1);
+  });
+
+  if (!isBoss && enemyTimer++ > 50) {
+    spawnEnemy();
+    enemyTimer = 0;
+  }
+
+  if (!isBoss && stageEnemiesDefeated >= 20) spawnBoss();
+
+  enemies.forEach((e, i) => {
+    e.y += e.speed;
+    drawEnemy(e);
+    if (e.boss && --e.fireCooldown <= 0) {
+      bossBullets.push({ x: e.x + e.width / 2, y: e.y + e.height, speed: 4 });
+      e.fireCooldown = 100;
+    }
+    bullets.forEach((b, j) => {
+      if (b.x < e.x + e.width && b.x + 6 > e.x && b.y < e.y + e.height && b.y + (b.strong ? 20 : 12) > e.y) {
+        e.hp -= b.strong ? 3 : 1;
+        if (!b.strong) bullets.splice(j, 1);
+        if (e.hp <= 0) {
+          score += e.score;
+          kills++;
+          stageEnemiesDefeated++;
+          createExplosion(e.x + e.width / 2, e.y + e.height / 2, e.color);
+          enemies.splice(i, 1);
+          hitSound.currentTime = 0;
+          hitSound.play();
+          if (e.boss) {
+            isBoss = false;
+            stageEnemiesDefeated = 0;
+            level++;
+          }
+        }
+      }
+    });
+    if (e.y > canvas.height) gameOver = true;
+  });
+
+  bossBullets.forEach((b, i) => {
+    b.y += b.speed;
+    ctx.fillStyle = 'red';
+    ctx.beginPath();
+    ctx.arc(b.x, b.y, 5, 0, Math.PI * 2);
+    ctx.fill();
+    if (b.x > player.x && b.x < player.x + player.width && b.y > player.y && b.y < player.y + player.height) {
+      gameOver = true;
+    }
+    if (b.y > canvas.height) bossBullets.splice(i, 1);
+  });
+
+  drawExplosions();
+  requestAnimationFrame(update);
+}
+
+init();
+</script>
+</body>
+</html>
+DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <title>インベーダー風ゲーム</title>
+  <style>
+    body {
+      margin: 0;
+      background: black;
+      overflow: hidden;
+    }
+    canvas {
+      display: block;
+      margin: 0 auto;
+      background: #111;
+    }
+  </style>
+</head>
+<body>
+<canvas id="gameCanvas" width="480" height="640"></canvas>
+
+<script>
+const canvas = document.getElementById('gameCanvas');
+const ctx = canvas.getContext('2d');
+
+let score, kills, level, stageEnemiesDefeated;
+let isBoss, gameOver;
+let player, bullets, enemies, bossBullets, explosions;
+let keys = {};
+let enemyTimer = 0;
+let bulletCooldown = 0;
+
+// サウンド
+const shotSound = new Audio('shot.mp3');
+const hitSound = new Audio('explosion.mp3');
+shotSound.volume = 0.4;
+hitSound.volume = 0.5;
+
+document.addEventListener('keydown', e => {
+  keys[e.code] = true;
+  if (gameOver && e.code === 'Enter') {
+    init();
+  }
+});
+document.addEventListener('keyup', e => keys[e.code] = false);
+
+// 初期化関数（ゲーム開始 or 再スタート）
+function init() {
+  score = 0;
+  kills = 0;
+  level = 1;
+  stageEnemiesDefeated = 0;
+  isBoss = false;
+  gameOver = false;
+  player = { x: 220, y: 580, width: 50, height: 20, speed: 5 };
+  bullets = [];
+  enemies = [];
+  bossBullets = [];
+  explosions = [];
+  enemyTimer = 0;
+  bulletCooldown = 0;
+  requestAnimationFrame(update);
+}
+
+function spawnEnemy() {
+  if (isBoss) return;
+  const types = [
+    { color: '#66ff66', hp: 1, score: 100 },
+    { color: '#ffcc00', hp: 2, score: 200 },
+    { color: '#ff3366', hp: 3, score: 300 }
+  ];
+  const type = types[Math.floor(Math.random() * types.length)];
+  enemies.push({
+    x: Math.random() * 400,
+    y: 0,
+    width: 40,
+    height: 30,
+    speed: 1 + Math.random() * 0.5 + (level * 0.2),
+    color: type.color,
+    hp: type.hp,
+    maxHp: type.hp,
+    score: type.score,
+    boss: false
+  });
+}
+
+function spawnBoss() {
+  isBoss = true;
+  enemies.push({
+    x: 120,
+    y: 0,
+    width: 240,
+    height: 60,
+    speed: 0.8 + level * 0.2,
+    color: 'purple',
+    hp: 20 + level * 10,
+    maxHp: 20 + level * 10,
+    score: 1000,
+    boss: true,
+    fireCooldown: 100
+  });
+}
+
+function drawEnemy(e) {
+  ctx.save();
+  ctx.translate(e.x, e.y);
+  ctx.fillStyle = e.color;
+  ctx.shadowColor = e.color;
+  ctx.shadowBlur = 10;
+  ctx.beginPath();
+  ctx.ellipse(e.width / 2, e.height / 2, e.width / 2, e.height / 2.5, 0, 0, Math.PI * 2);
+  ctx.fill();
+
+  ctx.shadowBlur = 0;
+  ctx.fillStyle = 'white';
+  if (e.boss) {
+    ctx.beginPath();
+    ctx.arc(e.width / 2 - 30, e.height / 2 - 5, 5, 0, Math.PI * 2);
+    ctx.arc(e.width / 2, e.height / 2 - 10, 5, 0, Math.PI * 2);
+    ctx.arc(e.width / 2 + 30, e.height / 2 - 5, 5, 0, Math.PI * 2);
+    ctx.fill();
+  } else {
+    ctx.beginPath();
+    ctx.arc(13, 12, 2, 0, Math.PI * 2);
+    ctx.arc(27, 12, 2, 0, Math.PI * 2);
+    ctx.fill();
+  }
+
+  ctx.fillStyle = 'red';
+  ctx.fillRect(5, e.height - 6, e.width - 10, 4);
+  ctx.fillStyle = 'lime';
+  ctx.fillRect(5, e.height - 6, (e.width - 10) * (e.hp / e.maxHp), 4);
+  ctx.restore();
+}
+
+function drawMissile(b) {
+  ctx.fillStyle = b.strong ? 'cyan' : 'orange';
+  ctx.shadowColor = b.strong ? 'aqua' : 'yellow';
+  ctx.shadowBlur = 10;
+  ctx.fillRect(b.x, b.y, 6, b.strong ? 20 : 12);
+  ctx.shadowBlur = 0;
+}
+
+function drawFighter() {
+  ctx.save();
+  ctx.translate(player.x, player.y);
+  ctx.fillStyle = '#00ccff';
+  ctx.beginPath();
+  ctx.moveTo(25, 0);
+  ctx.lineTo(50, 20);
+  ctx.lineTo(0, 20);
+  ctx.closePath();
+  ctx.fill();
+  ctx.fillStyle = 'white';
+  ctx.beginPath();
+  ctx.arc(25, 12, 4, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.restore();
+}
+
+function drawScore() {
+  ctx.fillStyle = 'white';
+  ctx.font = '18px sans-serif';
+  ctx.fillText(`SCORE: ${score}  LEVEL: ${level}`, 10, 30);
+}
+
+function createExplosion(x, y, color) {
+  explosions.push({ x, y, radius: 0, max: 15, color, alpha: 1 });
+}
+
+function drawExplosions() {
+  for (let i = explosions.length - 1; i >= 0; i--) {
+    const ex = explosions[i];
+    ctx.globalAlpha = ex.alpha;
+    ctx.beginPath();
+    ctx.arc(ex.x, ex.y, ex.radius, 0, Math.PI * 2);
+    ctx.fillStyle = ex.color;
+    ctx.shadowColor = ex.color;
+    ctx.shadowBlur = 10;
+    ctx.fill();
+    ctx.shadowBlur = 0;
+    ctx.globalAlpha = 1;
+    ex.radius += 1;
+    ex.alpha -= 0.04;
+    if (ex.alpha <= 0) explosions.splice(i, 1);
+  }
+}
+
+function update() {
+  if (gameOver) {
+    ctx.fillStyle = 'white';
+    ctx.font = '30px sans-serif';
+    ctx.fillText('GAME OVER - Enterで再スタート', 40, canvas.height / 2);
+    return;
+  }
+
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+  // 自機の移動と徐々に下降
+  if (keys['ArrowLeft']) player.x -= player.speed;
+  if (keys['ArrowRight']) player.x += player.speed;
+  if (keys['ArrowUp']) player.y -= player.speed;
+  if (keys['ArrowDown']) player.y += player.speed;
+  player.y += 0.2; // ゆっくり下がる
+  if (player.x < 0) player.x = 0;
+  if (player.x + player.width > canvas.width) player.x = canvas.width - player.width;
+  if (player.y < 0) player.y = 0;
+  if (player.y + player.height > canvas.height) player.y = canvas.height - player.height;
+
+  if (keys['Space'] && bulletCooldown <= 0) {
+    const strong = kills >= 10;
+    bullets.push({ x: player.x + 22, y: player.y, speed: 8, strong: strong });
+    bulletCooldown = strong ? 20 : 10;
+    shotSound.currentTime = 0;
+    shotSound.play();
+    if (strong) {
+      kills -= 10;
+      level += 1;
+    }
+  }
+  if (bulletCooldown > 0) bulletCooldown--;
+
+  drawFighter();
+  drawScore();
+
+  bullets.forEach((b, i) => {
+    b.y -= b.speed;
+    drawMissile(b);
+    if (b.y < 0) bullets.splice(i, 1);
+  });
+
+  if (!isBoss && enemyTimer++ > 50) {
+    spawnEnemy();
+    enemyTimer = 0;
+  }
+
+  if (!isBoss && stageEnemiesDefeated >= 20) {
+    spawnBoss();
+  }
+
+  enemies.forEach((e, i) => {
+    e.y += e.speed;
+    drawEnemy(e);
+
+    // ボスが弾を撃つ
+    if (e.boss) {
+      if (!e.fireCooldown) e.fireCooldown = 100;
+      e.fireCooldown--;
+      if (e.fireCooldown <= 0) {
+        bossBullets.push({ x: e.x + e.width / 2, y: e.y + e.height, speed: 4 });
+        e.fireCooldown = 100;
+      }
+    }
+
+    bullets.forEach((b, j) => {
+      if (
+        b.x < e.x + e.width &&
+        b.x + 6 > e.x &&
+        b.y < e.y + e.height &&
+        b.y + (b.strong ? 20 : 12) > e.y
+      ) {
+        e.hp -= b.strong ? 3 : 1;
+        if (!b.strong) bullets.splice(j, 1);
+        if (e.hp <= 0) {
+          score += e.score;
+          kills += 1;
+          stageEnemiesDefeated += 1;
+          createExplosion(e.x + e.width / 2, e.y + e.height / 2, e.color);
+          enemies.splice(i, 1);
+          hitSound.currentTime = 0;
+          hitSound.play();
+          if (e.boss) {
+            isBoss = false;
+            stageEnemiesDefeated = 0;
+            level += 1;
+          }
+        }
+      }
+    });
+
+    if (e.y > canvas.height) {
+      gameOver = true;
+    }
+  });
+
+  // ボス弾の処理
+  bossBullets.forEach((b, i) => {
+    b.y += b.speed;
+    ctx.fillStyle = 'red';
+    ctx.beginPath();
+    ctx.arc(b.x, b.y, 5, 0, Math.PI * 2);
+    ctx.fill();
+
+    // プレイヤーに当たったらゲームオーバー
+    if (
+      b.x > player.x &&
+      b.x < player.x + player.width &&
+      b.y > player.y &&
+      b.y < player.y + player.height
+    ) {
+      gameOver = true;
+    }
+
+    if (b.y > canvas.height) bossBullets.splice(i, 1);
+  });
+
+  drawExplosions();
+
+  requestAnimationFrame(update);
+}
+
+init();
+</script>
+</body>
+</html>
+DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <title>インベーダー風ゲーム</title>
+  <style>
+    body {
+      margin: 0;
+      background: black;
+      overflow: hidden;
+    }
+    canvas {
+      display: block;
+      margin: 0 auto;
+      background: #111;
+    }
+  </style>
+</head>
+<body>
+<canvas id="gameCanvas" width="480" height="640"></canvas>
+
+<script>
+  const canvas = document.getElementById('gameCanvas');
+  const ctx = canvas.getContext('2d');
+
+  let score = 0;
+  let kills = 0;
+  let level = 1;
+  let stageEnemiesDefeated = 0;
+  let isBoss = false;
+
+  const player = {
+    x: 220,
+    y: 580,
+    width: 50,
+    height: 20,
+    speed: 5
+  };
+
+  const bullets = [];
+  const enemies = [];
+  const explosions = [];
+  let enemyTimer = 0;
+  let bulletCooldown = 0;
+  let gameOver = false;
+  const keys = {};
+
+  // 音声ファイル（ローカルで用意してください）
+  const shotSound = new Audio('shot.mp3');
+  const hitSound = new Audio('explosion.mp3');
+  shotSound.volume = 0.4;
+  hitSound.volume = 0.5;
+
+  document.addEventListener('keydown', e => keys[e.code] = true);
+  document.addEventListener('keyup', e => keys[e.code] = false);
+
+  function spawnEnemy() {
+    if (isBoss) return;
+
+    const types = [
+      { color: '#66ff66', hp: 1, score: 100 },
+      { color: '#ffcc00', hp: 2, score: 200 },
+      { color: '#ff3366', hp: 3, score: 300 }
+    ];
+    const type = types[Math.floor(Math.random() * types.length)];
+    enemies.push({
+      x: Math.random() * 400,
+      y: 0,
+      width: 40,
+      height: 30,
+      speed: 1 + Math.random() * 0.5 + (level * 0.2),
+      color: type.color,
+      hp: type.hp,
+      maxHp: type.hp,
+      score: type.score,
+      boss: false
+    });
+  }
+
+  function spawnBoss() {
+    isBoss = true;
+    enemies.push({
+      x: 120,
+      y: 0,
+      width: 240,
+      height: 60,
+      speed: 0.5 + level * 0.3,
+      color: 'purple',
+      hp: 20 + level * 10,
+      maxHp: 20 + level * 10,
+      score: 1000,
+      boss: true
+    });
+  }
+
+  function drawEnemy(e) {
+    ctx.save();
+    ctx.translate(e.x, e.y);
+    ctx.fillStyle = e.color;
+    ctx.shadowColor = e.color;
+    ctx.shadowBlur = 10;
+
+    ctx.beginPath();
+    ctx.ellipse(e.width / 2, e.height / 2, e.width / 2, e.height / 2.5, 0, 0, Math.PI * 2);
+    ctx.fill();
+
+    ctx.shadowBlur = 0;
+    ctx.fillStyle = 'white';
+    if (e.width > 100) {
+      // ボスの目（3つ）
+      ctx.beginPath();
+      ctx.arc(e.width / 2 - 30, e.height / 2 - 5, 5, 0, Math.PI * 2);
+      ctx.arc(e.width / 2, e.height / 2 - 10, 5, 0, Math.PI * 2);
+      ctx.arc(e.width / 2 + 30, e.height / 2 - 5, 5, 0, Math.PI * 2);
+      ctx.fill();
+    } else {
+      // 通常敵の目
+      ctx.beginPath();
+      ctx.arc(13, 12, 2, 0, Math.PI * 2);
+      ctx.arc(27, 12, 2, 0, Math.PI * 2);
+      ctx.fill();
+    }
+
+    // HPバー
+    ctx.fillStyle = 'red';
+    ctx.fillRect(5, e.height - 6, e.width - 10, 4);
+    ctx.fillStyle = 'lime';
+    ctx.fillRect(5, e.height - 6, (e.width - 10) * (e.hp / e.maxHp), 4);
+
+    ctx.restore();
+  }
+
+  function drawMissile(b) {
+    ctx.fillStyle = b.strong ? 'cyan' : 'orange';
+    ctx.shadowColor = b.strong ? 'aqua' : 'yellow';
+    ctx.shadowBlur = 10;
+    ctx.fillRect(b.x, b.y, 6, b.strong ? 20 : 12);
+    ctx.shadowBlur = 0;
+  }
+
+  function drawFighter() {
+    ctx.save();
+    ctx.translate(player.x, player.y);
+    ctx.fillStyle = '#00ccff';
+    ctx.beginPath();
+    ctx.moveTo(25, 0);
+    ctx.lineTo(50, 20);
+    ctx.lineTo(0, 20);
+    ctx.closePath();
+    ctx.fill();
+    ctx.fillStyle = 'white';
+    ctx.beginPath();
+    ctx.arc(25, 12, 4, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.restore();
+  }
+
+  function drawScore() {
+    ctx.fillStyle = 'white';
+    ctx.font = '18px sans-serif';
+    ctx.fillText(`SCORE: ${score}  LEVEL: ${level}`, 10, 30);
+  }
+
+  function createExplosion(x, y, color) {
+    explosions.push({ x, y, radius: 0, max: 15, color, alpha: 1 });
+  }
+
+  function drawExplosions() {
+    for (let i = explosions.length - 1; i >= 0; i--) {
+      const ex = explosions[i];
+      ctx.globalAlpha = ex.alpha;
+      ctx.beginPath();
+      ctx.arc(ex.x, ex.y, ex.radius, 0, Math.PI * 2);
+      ctx.fillStyle = ex.color;
+      ctx.shadowColor = ex.color;
+      ctx.shadowBlur = 10;
+      ctx.fill();
+      ctx.shadowBlur = 0;
+      ctx.globalAlpha = 1;
+
+      ex.radius += 1;
+      ex.alpha -= 0.04;
+
+      if (ex.alpha <= 0) explosions.splice(i, 1);
+    }
+  }
+
+  function update() {
+    if (gameOver) return;
+
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+    if (keys['ArrowLeft']) player.x -= player.speed;
+    if (keys['ArrowRight']) player.x += player.speed;
+    if (player.x < 0) player.x = 0;
+    if (player.x + player.width > canvas.width) player.x = canvas.width - player.width;
+
+    if (keys['Space'] && bulletCooldown <= 0) {
+      const strong = kills >= 10;
+      bullets.push({ x: player.x + 22, y: player.y, speed: 8, strong: strong });
+      bulletCooldown = strong ? 20 : 10;
+      shotSound.currentTime = 0;
+      shotSound.play();
+      if (strong) {
+        kills -= 10;
+        level += 1;
+      }
+    }
+    if (bulletCooldown > 0) bulletCooldown--;
+
+    drawFighter();
+    drawScore();
+
+    bullets.forEach((b, i) => {
+      b.y -= b.speed;
+      drawMissile(b);
+      if (b.y < 0) bullets.splice(i, 1);
+    });
+
+    if (!isBoss && enemyTimer++ > 50) {
+      spawnEnemy();
+      enemyTimer = 0;
+    }
+
+    if (!isBoss && stageEnemiesDefeated >= 20) {
+      spawnBoss();
+    }
+
+    enemies.forEach((e, i) => {
+      e.y += e.speed;
+      drawEnemy(e);
+
+      if (e.y > canvas.height) {
+        gameOver = true;
+        alert("ゲームオーバー！");
+      }
+
+      bullets.forEach((b, j) => {
+        if (
+          b.x < e.x + e.width &&
+          b.x + 6 > e.x &&
+          b.y < e.y + e.height &&
+          b.y + (b.strong ? 20 : 12) > e.y
+        ) {
+          e.hp -= b.strong ? 3 : 1;
+          if (!b.strong) bullets.splice(j, 1);
+          if (e.hp <= 0) {
+            score += e.score;
+            kills += 1;
+            stageEnemiesDefeated += 1;
+            createExplosion(e.x + e.width / 2, e.y + e.height / 2, e.color);
+            enemies.splice(i, 1);
+            hitSound.currentTime = 0;
+            hitSound.play();
+
+            if (e.boss) {
+              // ボスを倒したら次のステージへ
+              isBoss = false;
+              stageEnemiesDefeated = 0;
+              level += 1;
+            }
+          }
+        }
+      });
+    });
+
+    drawExplosions();
+    requestAnimationFrame(update);
+  }
+
+  update();
+</script>
+</body>
+</html>
+DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <title>インベーダー風ゲーム</title>
+  <style>
+    body {
+      margin: 0;
+      background: black;
+      overflow: hidden;
+    }
+    canvas {
+      display: block;
+      margin: 0 auto;
+      background: #111;
+    }
+  </style>
+</head>
+<body>
+<canvas id="gameCanvas" width="480" height="640"></canvas>
+
+<script>
+  const canvas = document.getElementById('gameCanvas');
+  const ctx = canvas.getContext('2d');
+
+  let score = 0;
+  let kills = 0;
+  let level = 1;
+
+  const player = {
+    x: 220,
+    y: 580,
+    width: 50,
+    height: 20,
+    speed: 5
+  };
+
+  const bullets = [];
+  const enemies = [];
+  const explosions = [];
+  let enemyTimer = 0;
+  let bulletCooldown = 0;
+  let gameOver = false;
+  const keys = {};
+
+  // あなたの爆発音（ファイル名を変更可能）
+  const hitSound = new Audio('explosion.mp3');
+  hitSound.volume = 0.5;
+
+  document.addEventListener('keydown', e => keys[e.code] = true);
+  document.addEventListener('keyup', e => keys[e.code] = false);
+
+  function spawnEnemy() {
+    const types = [
+      { color: '#66ff66', hp: 1, score: 100 },
+      { color: '#ffcc00', hp: 2, score: 200 },
+      { color: '#ff3366', hp: 3, score: 300 }
+    ];
+    const type = types[Math.floor(Math.random() * types.length)];
+    enemies.push({
+      x: Math.random() * 400,
+      y: 0,
+      width: 40,
+      height: 30,
+      speed: 1 + Math.random() * 0.5 + (level * 0.2),
+      color: type.color,
+      hp: type.hp,
+      maxHp: type.hp,
+      score: type.score
+    });
+  }
+
+  function drawEnemy(e) {
+    ctx.save();
+    ctx.translate(e.x, e.y);
+    ctx.fillStyle = e.color;
+    ctx.shadowColor = e.color;
+    ctx.shadowBlur = 10;
+
+    ctx.beginPath();
+    ctx.ellipse(20, 15, 18, 12, 0, 0, Math.PI * 2);
+    ctx.fill();
+
+    ctx.shadowBlur = 0;
+    ctx.fillStyle = 'white';
+    ctx.beginPath();
+    ctx.arc(13, 12, 2, 0, Math.PI * 2);
+    ctx.arc(27, 12, 2, 0, Math.PI * 2);
+    ctx.fill();
+
+    ctx.fillStyle = 'red';
+    ctx.fillRect(5, 28, 30, 4);
+    ctx.fillStyle = 'lime';
+    ctx.fillRect(5, 28, 30 * (e.hp / e.maxHp), 4);
+
+    ctx.restore();
+  }
+
+  function drawMissile(b) {
+    ctx.fillStyle = b.strong ? 'cyan' : 'orange';
+    ctx.shadowColor = b.strong ? 'aqua' : 'yellow';
+    ctx.shadowBlur = 15;
+    ctx.fillRect(b.x, b.y, 6, b.strong ? 20 : 12);
+    ctx.shadowBlur = 0;
+  }
+
+  function drawFighter() {
+    ctx.save();
+    ctx.translate(player.x, player.y);
+    ctx.fillStyle = '#00ccff';
+    ctx.beginPath();
+    ctx.moveTo(25, 0);
+    ctx.lineTo(50, 20);
+    ctx.lineTo(0, 20);
+    ctx.closePath();
+    ctx.fill();
+
+    ctx.fillStyle = 'white';
+    ctx.beginPath();
+    ctx.arc(25, 12, 4, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.restore();
+  }
+
+  function drawScore() {
+    ctx.fillStyle = 'white';
+    ctx.font = '18px sans-serif';
+    ctx.fillText(`SCORE: ${score}  LEVEL: ${level}`, 10, 30);
+  }
+
+  function createExplosion(x, y, color) {
+    const explosionColors = ['white', color, 'yellow', 'red', 'orange'];
+    for (let i = 0; i < 15; i++) {
+      explosions.push({
+        x,
+        y,
+        radius: 0,
+        max: 10 + Math.random() * 20,
+        color: explosionColors[i % explosionColors.length],
+        alpha: 1,
+        dx: (Math.random() - 0.5) * 4,
+        dy: (Math.random() - 0.5) * 4
+      });
+    }
+  }
+
+  function drawExplosions() {
+    for (let i = explosions.length - 1; i >= 0; i--) {
+      const ex = explosions[i];
+      ctx.globalAlpha = ex.alpha;
+      ctx.beginPath();
+      ctx.arc(ex.x, ex.y, ex.radius, 0, Math.PI * 2);
+      ctx.fillStyle = ex.color;
+      ctx.shadowColor = ex.color;
+      ctx.shadowBlur = 15;
+      ctx.fill();
+      ctx.shadowBlur = 0;
+      ctx.globalAlpha = 1;
+
+      ex.radius += 1;
+      ex.x += ex.dx;
+      ex.y += ex.dy;
+      ex.alpha -= 0.03;
+
+      if (ex.alpha <= 0) explosions.splice(i, 1);
+    }
+  }
+
+  function update() {
+    if (gameOver) return;
+
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+    if (keys['ArrowLeft']) player.x -= player.speed;
+    if (keys['ArrowRight']) player.x += player.speed;
+    if (player.x < 0) player.x = 0;
+    if (player.x + player.width > canvas.width) player.x = canvas.width - player.width;
+
+    if (keys['Space'] && bulletCooldown <= 0) {
+      const strong = kills >= 10;
+      bullets.push({ x: player.x + 22, y: player.y, speed: 8, strong: strong });
+      bulletCooldown = strong ? 20 : 10;
+      if (strong) {
+        kills -= 10;
+        level += 1;
+      }
+    }
+    if (bulletCooldown > 0) bulletCooldown--;
+
+    drawFighter();
+    drawScore();
+
+    bullets.forEach((b, i) => {
+      b.y -= b.speed;
+      drawMissile(b);
+      if (b.y < 0) bullets.splice(i, 1);
+    });
+
+    if (enemyTimer++ > 60) {
+      spawnEnemy();
+      enemyTimer = 0;
+    }
+
+    enemies.forEach((e, i) => {
+      e.y += e.speed;
+      drawEnemy(e);
+
+      if (e.y > canvas.height) {
+        gameOver = true;
+        alert("ゲームオーバー！");
+      }
+
+      bullets.forEach((b, j) => {
+        if (
+          b.x < e.x + e.width &&
+          b.x + 6 > e.x &&
+          b.y < e.y + e.height &&
+          b.y + (b.strong ? 20 : 12) > e.y
+        ) {
+          e.hp -= b.strong ? 3 : 1;
+          if (!b.strong) bullets.splice(j, 1);
+          if (e.hp <= 0) {
+            score += e.score;
+            kills += 1;
+            createExplosion(e.x + 20, e.y + 15, e.color);
+            enemies.splice(i, 1);
+            hitSound.currentTime = 0;
+            hitSound.play();
+          }
+        }
+      });
+    });
+
+    drawExplosions();
+    requestAnimationFrame(update);
+  }
+
+  update();
+</script>
+</body>
+</html>
